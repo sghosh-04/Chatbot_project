@@ -69,10 +69,15 @@ Frontend: HTML, CSS, JavaScript
 
 Project Structure:
 chatbot_project/
+|
 ├── chatbot.py              
 ├── intent_model.pkl        
 ├── tfidf_vectorizer.pkl    
-├── responses.pkl           
+├── responses.pkl 
+|
 ├── templates/
 │   └── index.html          
 ├── README.md
+
+
+dataset https://www.kaggle.com/datasets/bitext/bitext-gen-ai-chatbot-customer-support-dataset
