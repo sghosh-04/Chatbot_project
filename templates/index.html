@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Customer Support Chat</title>
+
+<style>
+:root {
+    --bg-main: #0f1115;
+    --bg-container: #161a22;
+    --bg-header: #0b0d12;
+    --bg-input: #1c2230;
+
+    --accent: #4f7cff;
+
+    --bot-bubble: #1e2535;
+    --user-bubble: #4f7cff;
+
+    --text-primary: #e6e8eb;
+    --text-secondary: #9aa4b2;
+}
+
+* {
+    box-sizing: border-box;
+    font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+body {
+    margin: 0;
+    height: 100vh;
+    background: linear-gradient(135deg, #0f1115, #090b10);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+
+
+.chat-container {
+    width: 1000px;
+    height: 650px;
+    background: var(--bg-container);
+    border-radius: 18px;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.7);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+
+
+.chat-header {
+    background: var(--bg-header);
+    color: var(--text-primary);
+    padding: 18px;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border-bottom: 1px solid #222836;
+}
+
+
+
+.chat-box {
+    flex: 1;
+    padding: 22px;
+    overflow-y: auto;
+    background: var(--bg-main);
+}
+
+
+
+.message {
+    margin-bottom: 16px;
+    max-width: 72%;
+    padding: 12px 16px;
+    border-radius: 16px;
+    font-size: 14.5px;
+    line-height: 1.6;
+    animation: fadeIn 0.25s ease;
+    word-wrap: break-word;
+}
+
+.user {
+    background: var(--user-bubble);
+    color: white;
+    margin-left: auto;
+    border-bottom-right-radius: 6px;
+}
+
+.bot {
+    background: var(--bot-bubble);
+    color: var(--text-primary);
+    margin-right: auto;
+    border-bottom-left-radius: 6px;
+}
+
+
+
+.chat-input {
+    display: flex;
+    padding: 14px;
+    background: var(--bg-input);
+    border-top: 1px solid #232938;
+}
+
+input {
+    flex: 1;
+    padding: 12px 16px;
+    font-size: 15px;
+    border-radius: 22px;
+    border: 1.5px solid #2c3448;
+    outline: none;
+    background: #0f131d;
+    color: var(--text-primary);
+}
+
+input::placeholder {
+    color: var(--text-secondary);
+}
+
+input:focus {
+    border-color: var(--accent);
+}
+
+button {
+    height: 44px;
+    min-width: 110px;
+    margin-left: 10px;
+    padding: 0 18px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 22px;
+    cursor: pointer;
+    font-size: 14.5px;
+    font-weight: 500;
+    transition: background 0.2s ease;
+}
+
+button:hover {
+    background: #6a90ff;
+}
+
+
+
+.chat-box::-webkit-scrollbar {
+    width: 6px;
+}
+
+.chat-box::-webkit-scrollbar-thumb {
+    background: #2b3245;
+    border-radius: 10px;
+}
+
+
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+</style>
+</head>
+
+<body>
+
+<div class="chat-container">
+    <div class="chat-header">
+        AI-Powered Customer Support Assistant
+    </div>
+
+    <div class="chat-box" id="chatBox"></div>
+
+    <div class="chat-input">
+        <input type="text" id="userInput" placeholder="Type your message..." autocomplete="off">
+        <button onclick="sendMessage()">Send</button>
+    </div>
+</div>
+
+<script>
+const input = document.getElementById("userInput");
+const chatBox = document.getElementById("chatBox");
+
+input.addEventListener("keydown", function(e) {
+    if (e.key === "Enter") {
+        sendMessage();
+    }
+});
+
+function addMessage(text, sender) {
+    const msg = document.createElement("div");
+    msg.classList.add("message", sender);
+    msg.innerText = text;
+    chatBox.appendChild(msg);
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+function sendMessage() {
+    const message = input.value.trim();
+    if (!message) return;
+
+    addMessage(message, "user");
+    input.value = "";
+
+    fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message })
+    })
+    .then(res => res.json())
+    .then(data => {
+        addMessage(data.reply, "bot");
+    })
+    .catch(() => {
+        addMessage("⚠️ Unable to connect to the server.", "bot");
+    });
+}
+</script>
+
+</body>
+</html>
