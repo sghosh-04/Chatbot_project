@@ -6,65 +6,38 @@ from nltk.stem import WordNetLemmatizer
 from flask import Flask, render_template, request, jsonify
 from datetime import datetime, timedelta
 
-# ---------------- SETUP ---------------- #
-
 nltk.download("punkt")
 nltk.download("wordnet")
 
-lemmatizer = WordNetLemmatizer()
 app = Flask(__name__)
+lemmatizer = WordNetLemmatizer()
 
-# ---------------- LOAD TF-IDF MODEL ---------------- #
-
+# ---------- LOAD MODEL ----------
 model = joblib.load("intent_model.pkl")
 vectorizer = joblib.load("tfidf_vectorizer.pkl")
 responses_map = joblib.load("responses.pkl")
 
-# ---------------- CONVERSATION CONTEXT ---------------- #
+# ---------- CONTEXT ----------
+user_context = {}
 
-user_context = {
-    "current_flow": None,
-    "awaiting_booking_id": False,
-    "awaiting_refund_reason": False,
-    "awaiting_exchange_reason": False,
-    "awaiting_anything_else": False,
-    "awaiting_handoff_confirmation": False,
-    "awaiting_tracking_id": False,   # 👈 NEW
-    "booking_id": None,
-    "refund_reason": None,
-    "exchange_reason": None,
-    "user_ticket_id": None,
-    "chat_ended": False
-}
-
-def reset_user_context():
+def reset_context():
+    user_context.clear()
     user_context.update({
-        "current_flow": None,
+        "current_flow": None,     # refund | exchange | track
         "awaiting_booking_id": False,
-        "awaiting_refund_reason": False,
-        "awaiting_exchange_reason": False,
+        "awaiting_reason": False,
         "awaiting_anything_else": False,
-        "awaiting_handoff_confirmation": False,
+        "awaiting_handoff": False,
         "booking_id": None,
-        "refund_reason": None,
-        "exchange_reason": None,
-        "user_ticket_id": None,
+        "reason": None,
+        "ticket_id": None,
         "chat_ended": False
-
     })
 
+reset_context()
 
-
-# ---------------- RULE-BASED DATA ---------------- #
-
+# ---------- DATA ----------
 GREETINGS = ["hi", "hello", "hey", "good morning", "good evening"]
-GREETING_RESPONSES = [
-    "Hi 👋 How can I help you today?",
-    "Hello! 😊 What can I assist you with?",
-    "Hey there! I'm here to help."
-]
-
-EXCHANGE_KEYWORDS = ["exchange", "replace", "replacement", "change product"]
 
 REFUND_REASONS = [
     "Received a damaged or defective product",
@@ -82,13 +55,6 @@ EXCHANGE_REASONS = [
     "Received incorrect item"
 ]
 
-POLICY_NOTICE = (
-    "📄 As per our company policy, refunds and exchanges are allowed "
-    "within **7 days of delivery**.\n\n"
-    "Please review the detailed policy on our website for complete information.\n\n"
-    "A customer support associate will still review your request and reach out shortly."
-)
-
 ORDER_STATUSES = [
     ("Order confirmed", "Processing"),
     ("Shipped", "In transit"),
@@ -96,359 +62,192 @@ ORDER_STATUSES = [
     ("Delivered", "Completed")
 ]
 
-FRUSTRATION_WORDS = ["angry", "ridiculous", "worst", "useless", "annoyed"]
-
-PROACTIVE_MENU = (
-    "I can help you with the following:\n\n"
-    "1️⃣ Request a refund\n"
-    "2️⃣ Exchange a product\n"
-    "3️⃣ Track order status\n"
-    "4️⃣ View company policies\n\n"
-    "Please reply with 1, 2, 3, or 4."
-)
-
-VAGUE_INPUTS = ["help", "issue", "problem", "support"]
-
-NEGATIVE_WORDS = [
-    "angry", "frustrated", "frustrating", "ridiculous", "worst",
-    "annoyed", "useless", "terrible", "disappointed", "hate"
-]
-
-POSITIVE_WORDS = [
-    "thanks", "thank you", "great", "awesome", "good", "helpful"
-]
-
-EMPATHY_RESPONSES = [
-    "I understand this can be frustrating 😔",
-    "Sorry about the trouble you're facing.",
-    "I get how this can be annoying — let me help."
-]
-
-POSITIVE_RESPONSES = [
-    "Glad to hear that 😊",
-    "Happy to help!",
-    "You're welcome!"
-]
-
-
-HANDOFF_PROMPT = (
-    "This request requires manual review.\n\n"
-    "Would you like me to connect you to a customer support agent now?\n\n"
-    "1️⃣ Yes, connect me\n"
-    "2️⃣ No, I’ll continue with the bot"
-)
-
-
-
-# ---------------- HELPERS ---------------- #
-
-def generate_ticket_id():
-    return f"SUP-{random.randint(100000, 999999)}"
-
-
-def get_mock_order_status():
-    return random.choice(ORDER_STATUSES)
-
-
+# ---------- HELPERS ----------
 def preprocess(text):
-    tokens = nltk.word_tokenize(text.lower())
-    tokens = [lemmatizer.lemmatize(w) for w in tokens]
-    return " ".join(tokens)
+    return " ".join(
+        lemmatizer.lemmatize(w)
+        for w in nltk.word_tokenize(text.lower())
+    )
 
 def is_booking_id(text):
     return bool(re.search(r"[A-Za-z0-9#]{5,}", text))
 
-def format_refund_reasons():
-    text = "Please select the reason for your return:\n\n"
-    for i, reason in enumerate(REFUND_REASONS, start=1):
-        text += f"{i}. {reason}\n"
-    return text
+def generate_ticket():
+    return f"SUP-{random.randint(100000, 999999)}"
 
-def format_exchange_reasons():
-    text = "Please select the reason for exchange:\n\n"
-    for i, reason in enumerate(EXCHANGE_REASONS, start=1):
-        text += f"{i}. {reason}\n"
-    return text
-
-def get_mock_delivery_date():
+def get_delivery_date():
     return datetime.now() - timedelta(days=random.randint(1, 14))
 
-def is_within_7_days(delivery_date):
-    return (datetime.now() - delivery_date).days <= 7
+def within_7_days(date):
+    return (datetime.now() - date).days <= 7
 
-def extract_model_hint(text, max_words=10):
-    words = text.replace("\n", " ").split()
-    short = " ".join(words[:max_words])
-    return short.rstrip(".") + "."
+def order_status():
+    return random.choice(ORDER_STATUSES)
 
-# ---------------- MAIN CHATBOT LOGIC ---------------- #
+def format_options(options):
+    return "\n".join(f"{i+1}. {o}" for i, o in enumerate(options))
 
+# ---------- CHATBOT ----------
 def chatbot_reply(message):
     msg = message.lower().strip()
 
+    # 🔚 CHAT ENDED
+    if user_context["chat_ended"]:
+        return "🔚 This chat has ended.\nPlease start a new chat for further assistance."
 
-    # ---- Chat already ended ----
-    if user_context.get("chat_ended", False):
-        return (
-            "🔚 This chat has ended.\n"
-            "Please start a new chat if you need further assistance."
-        )
-
-    # ---- Greeting ----
+    # 👋 GREETING
     if msg in GREETINGS:
-        return random.choice(GREETING_RESPONSES)
+        return random.choice([
+            "Hi 👋 How can I help you today?",
+            "Hello! 😊 What can I assist you with?",
+            "Hey there! I'm here to help."
+        ])
 
-    # ---- Human handoff confirmation (HIGHEST PRIORITY) ----
-    if user_context["awaiting_handoff_confirmation"]:
-        if msg == "1":
-            ticket_id = user_context.get("user_ticket_id", "N/A")
+    # ---------- HIGH PRIORITY INTENTS ----------
+    if "track" in msg:
+        user_context.update({
+            "current_flow": "track",
+            "awaiting_booking_id": True
+        })
+        return "📦 Sure! Please share your booking or order ID to track your order."
 
-            user_context["chat_ended"] = True   # 👈 HARD STOP
+    if "refund" in msg:
+        user_context.update({
+            "current_flow": "refund",
+            "awaiting_booking_id": True
+        })
+        return "Sure 😊 I can help with a refund. Please share your booking ID."
 
-            return (
-                "📞 You’re now being connected to a customer support agent.\n\n"
-                f"🧾 Ticket ID: {ticket_id}\n\n"
-                "An agent will reach out to you shortly. Thank you for your patience.\n\n"
-                "🔚 Chat ended.\n"
-                "Start a new chat if you need further assistance."
-            )
+    if "exchange" in msg:
+        user_context.update({
+            "current_flow": "exchange",
+            "awaiting_booking_id": True
+        })
+        return "Sure 😊 I can help with an exchange. Please share your booking ID."
 
-        if msg == "2":
-            user_context["awaiting_handoff_confirmation"] = False
-            return "No problem 😊 I’m here. How else can I help you?"
-
-        return "Just let me know with **1** or **2** 😊"
-
-
-    # ---- Follow-up after completion (Yes / No) ----
-    if user_context["awaiting_anything_else"]:
-        clean_msg = re.sub(r"[^\w\s]", "", msg)
-
-        if any(word in clean_msg for word in ["yes", "yeah", "yep", "sure", "ok", "okay"]):
-            user_context["awaiting_anything_else"] = False
-            return "Sure 😊 How else can I assist you today?"
-
-        if any(word in clean_msg for word in ["no", "nope", "nah", "no thanks", "thank you", "thanks"]):
-            user_context["awaiting_anything_else"] = False
-            reset_user_context()
-
-            return (
-                "You're welcome 😊 Thank you for contacting support. Have a great day! 👋\n\n"
-                "🔚 Chat ended.\n"
-                "Start a new chat if you need further assistance."
-            )
-
-
-        return "Please reply with Yes or No."
-
-    # ---- Order status (simple intent) ----
-    if "track" in msg or "order status" in msg:
-        user_context["awaiting_tracking_id"] = True
-        return (
-            "Sure 😊 I can help track your order.\n\n"
-            "Please share your booking or order ID."
-        )
-
-
-
-    # ---- Awaiting booking ID ----
+    # ---------- BOOKING ID ----------
     if user_context["awaiting_booking_id"]:
-        if is_booking_id(message):
-            user_context["booking_id"] = message
-            user_context["awaiting_booking_id"] = False
+        if not is_booking_id(message):
+            return "Please share a valid booking or order ID."
 
-            if user_context["current_flow"] == "refund":
-                user_context["awaiting_refund_reason"] = True
-                return f"Thanks for sharing your booking ID ({message}). ✅\n\n" + format_refund_reasons()
+        user_context["booking_id"] = message
+        user_context["awaiting_booking_id"] = False
 
-            if user_context["current_flow"] == "exchange":
-                user_context["awaiting_exchange_reason"] = True
-                return f"Thanks for sharing your booking ID ({message}). ✅\n\n" + format_exchange_reasons()
-
-        return "Please share a valid booking or transaction ID."
-
-    if any(word in msg for word in FRUSTRATION_WORDS):
-        return (
-            "I understand this can be frustrating 😔\n"
-            "Let me help resolve this for you.\n\n"
-            "Could you please share your booking ID?"
-        )
-    
-
-    # ---- Awaiting tracking ID ----
-    if user_context["awaiting_tracking_id"]:
-        if is_booking_id(message):
-            user_context["awaiting_tracking_id"] = False
-            user_context["booking_id"] = message
-
-            status, note = get_mock_order_status()
-
+        if user_context["current_flow"] == "track":
+            status, note = order_status()
             user_context["awaiting_anything_else"] = True
-
-            tracking_link = f"https://track.yourcompany.com/{message}"
-
             return (
                 f"📦 Order Status for {message}: {status}\n"
-                f"🚚 {note}\n\n"
-                f"🔗 Track your order here:\n{tracking_link}\n\n"
+                f"🚚 {note}\n"
+                f"🔗 Track here: https://tracking.company.com/{message}\n\n"
                 "Can I help you with anything else?"
             )
 
+        if user_context["current_flow"] == "refund":
+            user_context["awaiting_reason"] = True
+            return (
+                f"Thanks for sharing your booking ID ({message}). ✅\n\n"
+                "Please select the reason for refund:\n\n"
+                + format_options(REFUND_REASONS)
+            )
 
-        return "Please share a valid booking or order ID."
+        if user_context["current_flow"] == "exchange":
+            user_context["awaiting_reason"] = True
+            return (
+                f"Thanks for sharing your booking ID ({message}). ✅\n\n"
+                "Please select the reason for exchange:\n\n"
+                + format_options(EXCHANGE_REASONS)
+            )
 
-
-    # ---- Awaiting refund reason ----
-    # ---- Awaiting refund reason ----
-    if user_context["awaiting_refund_reason"]:
-
+    # ---------- REASON ----------
+    if user_context["awaiting_reason"]:
         if not msg.isdigit():
-            return "Please reply with a number between 1 and 5."
+            return "Please reply with a number from the list."
 
-        choice = int(msg)
+        choice = int(msg) - 1
+        options = REFUND_REASONS if user_context["current_flow"] == "refund" else EXCHANGE_REASONS
 
-        if not (1 <= choice <= len(REFUND_REASONS)):
-            return "Please select a valid option (1–5)."
+        if choice not in range(len(options)):
+            return "Please select a valid option."
 
-        # Save refund reason
-        user_context["refund_reason"] = REFUND_REASONS[choice - 1]
-        user_context["awaiting_refund_reason"] = False
-        user_context["awaiting_anything_else"] = True
+        user_context["reason"] = options[choice]
+        user_context["awaiting_reason"] = False
 
-        delivery_date = get_mock_delivery_date()
-        days = (datetime.now() - delivery_date).days
-        eligible = is_within_7_days(delivery_date)
+        delivered = get_delivery_date()
+        eligible = within_7_days(delivered)
+        ticket = generate_ticket()
+        user_context["ticket_id"] = ticket
 
         if eligible:
-            ticket_id = generate_ticket_id()
-            user_context["user_ticket_id"] = ticket_id
-
+            user_context["awaiting_anything_else"] = True
             return (
-                "✅ Your refund request has been successfully initiated.\n\n"
-                f"🧾 Ticket ID: {ticket_id}\n"
-                f"📌 Refund Reason: {user_context['refund_reason']}\n\n"
+                f"✅ Your {user_context['current_flow']} request has been initiated.\n\n"
+                f"🧾 Ticket ID: {ticket}\n"
+                f"📌 Reason: {user_context['reason']}\n\n"
                 "You will receive updates shortly.\n\n"
                 "Can I help you with anything else?"
             )
-
-
         else:
-            ticket_id = generate_ticket_id()
-            user_context["user_ticket_id"] = ticket_id
-
-            user_context["awaiting_handoff_confirmation"] = True
-
+            user_context["awaiting_handoff"] = True
             return (
-                "⚠️ Your order is beyond the 7-day refund window.\n\n"
-                f"🧾 Ticket ID: {ticket_id}\n"
-                f"📌 Refund Reason: {user_context['refund_reason']}\n\n"
-                "This request requires manual review.\n\n"
-                "Would you like me to connect you to a customer support agent now?\n\n"
-                "1️⃣ Yes, connect me\n"
-                "2️⃣ No, I’ll continue with the bot"
+                f"⚠️ Your order is beyond the 7-day window.\n\n"
+                f"🧾 Ticket ID: {ticket}\n"
+                f"📌 Reason: {user_context['reason']}\n\n"
+                "Would you like me to connect you to a support agent?\n\n"
+                "1️⃣ Yes\n"
+                "2️⃣ No"
             )
 
-    # ---- Awaiting exchange reason ----
-    # ---- Awaiting exchange reason ----
-    if user_context["awaiting_exchange_reason"]:
-
-        if not msg.isdigit():
-            return "Please reply with a number between 1 and 5."
-
-        choice = int(msg)
-
-        if not (1 <= choice <= len(EXCHANGE_REASONS)):
-            return "Please select a valid option (1–5)."
-
-        # Save exchange reason
-        user_context["exchange_reason"] = EXCHANGE_REASONS[choice - 1]
-        user_context["awaiting_exchange_reason"] = False
-        user_context["awaiting_anything_else"] = True
-
-        delivery_date = get_mock_delivery_date()
-        days = (datetime.now() - delivery_date).days
-        eligible = is_within_7_days(delivery_date)
-
-        if eligible:
-            ticket_id = generate_ticket_id()
-            user_context["user_ticket_id"] = ticket_id
-
+    # ---------- HANDOFF ----------
+    if user_context["awaiting_handoff"]:
+        if msg == "1":
+            user_context["chat_ended"] = True
             return (
-                "✅ Your exchange request has been successfully initiated.\n\n"
-                f"🧾 Ticket ID: {ticket_id}\n"
-                f"📌 Exchange Reason: {user_context['exchange_reason']}\n\n"
-                "Our logistics team will contact you for pickup and replacement.\n\n"
-                "Can I help you with anything else?"
+                "📞 You’re now being connected to a customer support agent.\n\n"
+                f"🧾 Ticket ID: {user_context['ticket_id']}\n\n"
+                "Thank you for your patience.\n\n"
+                "🔚 Chat ended. Start a new chat anytime."
             )
+        if msg == "2":
+            user_context["awaiting_handoff"] = False
+            return "No problem 😊 How else can I help?"
 
+        return "Please reply with **1** or **2**."
 
-        else:
-            ticket_id = generate_ticket_id()
-            user_context["user_ticket_id"] = ticket_id
+    # ---------- ANYTHING ELSE ----------
+    if user_context["awaiting_anything_else"]:
+        if msg in ["yes", "yeah", "yep", "sure"]:
+            user_context["awaiting_anything_else"] = False
+            return "Sure 😊 What can I help you with?"
+        if msg in ["no", "nope", "nah", "thanks", "thank you"]:
+            user_context["chat_ended"] = True
+            return "You're welcome 😊 Chat ended. Start a new chat anytime!"
 
-            user_context["awaiting_handoff_confirmation"] = True
-
-            return (
-                "⚠️ Your order is beyond the 7-day exchange window.\n\n"
-                f"🧾 Ticket ID: {ticket_id}\n"
-                f"📌 exchange Reason: {user_context['exchange_reason']}\n\n"
-                "This request requires manual review.\n\n"
-                "Would you like me to connect you to a customer support agent now?\n\n"
-                "1️⃣ Yes, connect me\n"
-                "2️⃣ No, I’ll continue with the bot"
-            )
-
-    # ---- Exchange intent (rule-based) ----
-    if any(word in msg for word in EXCHANGE_KEYWORDS):
-        user_context["current_flow"] = "exchange"
-        user_context["awaiting_booking_id"] = True
-        return "Sure 😊 I can help with an exchange. Please share your booking or order ID."
-
-    # ---- ML intent detection ----
+    # ---------- ML FALLBACK ----------
     vec = vectorizer.transform([preprocess(message)])
     probs = model.predict_proba(vec)[0]
 
     if max(probs) < 0.4:
         return (
-            "I'm not sure I understood that 😅\n\n"
             "I can help you with:\n"
             "1️⃣ Refund\n"
             "2️⃣ Exchange\n"
-            "3️⃣ Order status\n"
-            "4️⃣ Company policies\n\n"
-            "Please choose an option."
+            "3️⃣ Track order\n\n"
+            "Please tell me what you’d like to do."
         )
 
     tag = model.classes_[probs.argmax()]
+    return random.choice(responses_map.get(tag, ["How can I help you?"]))
 
-    # ---- Refund intent ----
-    if "refund" in tag:
-        user_context["current_flow"] = "refund"
-        user_context["awaiting_booking_id"] = True
-        user_context["current_flow"] = "refund"
-        user_context["awaiting_booking_id"] = True
-
-        return (
-            "Sure 😊 I can help you with your refund.\n\n"
-            "Please share your booking or transaction ID so I can assist you further."
-        )
-
-    return random.choice(responses_map.get(tag, ["How can I assist you further?"]))
-
-
-# ---------------- FLASK ROUTES ---------------- #
-
+# ---------- ROUTES ----------
 @app.route("/")
 def home():
+    reset_context()   # RESET ON REFRESH
     return render_template("index.html")
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    user_message = request.json.get("message", "")
-    return jsonify({"reply": chatbot_reply(user_message)})
-
-# ---------------- RUN ---------------- #
+    return jsonify({"reply": chatbot_reply(request.json.get("message", ""))})
 
 if __name__ == "__main__":
-    print("🌐 Customer Support Chatbot running at http://127.0.0.1:5000")
     app.run(debug=True)
